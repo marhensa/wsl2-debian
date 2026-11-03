@@ -2,6 +2,13 @@
 
 > This guide provides a modular, step-by-step workflow to install Debian on WSL2, configure Rootless Docker Engine, and optionally integrate the NVIDIA Container Toolkit for GPU acceleration if your host machine has an NVIDIA GPU.
 
+> [!IMPORTANT]
+> **Before you start**
+> * Windows 11 with WSL 2.4.4 or newer (`wsl --version`).
+> * VS Code installed on Windows with the WSL extension if you want `code .` (see the [VS Code WSL guide](https://code.visualstudio.com/docs/remote/wsl)).
+> * The guide uses `D:\WSL` as an example; replace it if you do not have a `D:` drive.
+> * The NVIDIA phase is optional and needs a current Windows NVIDIA driver.
+
 ---
 
 ## Phase 1: PowerShell Initial Setup (Windows Host)
@@ -12,34 +19,38 @@ Run these commands in a **PowerShell** prompt on Windows.
 # ------------------------------------------------------------------------------
 # STEP 1: First-Time Setup & Windows Prerequisites
 # ------------------------------------------------------------------------------
-# NOTE: If WSL is not yet installed on Windows, running this command will 
-# enable the required Windows features and prompt for a PC restart. 
-# If prompted, restart your PC, open PowerShell, and run this exact command again.
+# NOTE: If WSL is not yet installed on Windows, running this command will
+# enable the required Windows features and prompt for a PC restart.
+# If prompted, restart your PC and rerun this block.
+
+# --location requires the target directory to exist. Create it first.
+New-Item -ItemType Directory -Force -Path "D:\WSL\Debian" | Out-Null
 
 wsl --install Debian --name Debian --web-download --location "D:\WSL\Debian" --no-launch
 
 # ------------------------------------------------------------------------------
 # STEP 2: Initialize Instance & Create User
 # ------------------------------------------------------------------------------
-# Launch the instance to trigger the initial configuration prompt where you create 
+# Launch the instance to trigger the initial configuration prompt where you create
 # your non-root UNIX username and password.
 
 wsl -d Debian
 ```
 
-Inside the Debian shell, configure `/etc/wsl.conf` with this block. It uses `$USER`, so there is no username placeholder to edit:
+> [!NOTE]
+> `--name` and `--location` require WSL 2.4.4 or newer. If WSL is already installed, run `wsl --update` before the install command. If WSL is not installed yet, the first run enables it and may request elevation once; after the restart, rerun the block from a normal PowerShell prompt.
+
+Inside the Debian shell, configure `/etc/wsl.conf` and the VS Code mounts. `$USER` is expanded automatically, and `WINUSER` is auto-detected while `/mnt/c` is still mounted:
 
 ```bash
-# Optional: Ensure you always start in your home directory
-echo 'cd ~' >> ~/.bashrc && source ~/.bashrc
-
 # Write /etc/wsl.conf (unquoted EOF lets $USER expand)
 sudo tee /etc/wsl.conf >/dev/null <<EOF
 [boot]
 systemd=true
 
 [automount]
-enabled=true
+enabled=false
+mountFsTab=true
 
 [interop]
 appendWindowsPath=false
@@ -50,12 +61,47 @@ hostname=debian
 [user]
 default=$USER
 EOF
+
+# VS Code Remote-WSL reads these two Windows folders. Mount only them, read-only.
+# The mountpoint directories are created after the WSL restart, before `mount -a`.
+WINUSER="$(/mnt/c/Windows/System32/cmd.exe /c 'echo %USERNAME%' 2>/dev/null | tr -d '\r')"
+if [ -z "$WINUSER" ]; then
+  WINUSER="$(sed -n 's#^c:/Users/\([^/]*\)/vscode-remote-wsl.*#\1#p' /etc/fstab | head -n 1)"
+fi
+WINUSER="${WINUSER:-YourWindowsUsername}"
+
+if ! grep -q 'vscode-remote-wsl' /etc/fstab; then
+  sudo tee -a /etc/fstab >/dev/null <<EOF
+c:/Users/$WINUSER/.vscode/extensions  /mnt/c/Users/$WINUSER/.vscode/extensions  drvfs defaults,ro 0 0
+c:/Users/$WINUSER/vscode-remote-wsl   /mnt/c/Users/$WINUSER/vscode-remote-wsl   drvfs defaults,ro 0 0
+EOF
+fi
+
+# Detect the VS Code install folder so `code .` works without extra steps.
+CODE_ROOT=""
+for p in "/mnt/c/Users/$WINUSER/AppData/Local/Programs/Microsoft VS Code" \
+         "/mnt/c/Program Files/Microsoft VS Code"; do
+  if [ -d "$p" ]; then
+    CODE_ROOT="$p"
+    break
+  fi
+done
+
+if [ -n "$CODE_ROOT" ]; then
+  CODE_WIN="$(wslpath -w "$CODE_ROOT" | sed 's#\\#/#g')"
+  CODE_WIN_ESC="${CODE_WIN// /\\040}"
+  CODE_ROOT_ESC="${CODE_ROOT// /\\040}"
+  if ! grep -qF "$CODE_WIN_ESC" /etc/fstab; then
+    printf '%s  %s  drvfs defaults,ro 0 0\n' "$CODE_WIN_ESC" "$CODE_ROOT_ESC" |
+      sudo tee -a /etc/fstab >/dev/null
+  fi
+fi
 ```
 
 > [!TIP]
 > * **Username:** `$USER` is expanded by your current shell before `sudo` runs, so the file gets the UNIX username you created in Step 2. Run the block as your normal user, not through `sudo -i` or as root, or `$USER` will be `root`.
-> * **VS Code Integration:** `[automount] enabled=true` mounts your Windows drives under `/mnt/c`, which is strictly required for the VS Code Remote WSL extension to function.
-> * **Terminal `code` Command:** Because `appendWindowsPath=false` isolates your Linux `$PATH` from Windows, `code .` is not available in your WSL terminal. Paste the block below to auto-detect the Windows VS Code CLI and add an alias to `~/.bashrc`. It is safe to re-paste; if VS Code is not installed yet, the block simply does nothing, so run it again after installing VS Code.
+> * **VS Code Integration:** The VS Code Remote-WSL extension needs `%USERPROFILE%\.vscode\extensions` and `%USERPROFILE%\vscode-remote-wsl`. With automount disabled, the two `/etc/fstab` entries above provide exactly those folders, read-only; the rest of `C:` stays hidden. The mountpoints are created after the restart.
+> * **Terminal `code` Command:** Because `appendWindowsPath=false` isolates your Linux `$PATH` from Windows, `code .` is not available in your WSL terminal. The block below auto-detects the Windows VS Code CLI, adds an alias to `~/.bashrc`, and adds the VS Code install folder to `/etc/fstab` as a read-only mount. Install VS Code on Windows before running this block.
 
 ```bash
 # Remove a previous copy (makes re-pasting safe)
@@ -74,6 +120,7 @@ fi
 
 cat << 'EOF' >> ~/.bashrc
 # >>> vscode cli >>>
+# Alias `code` to the Windows VS Code CLI so `code .` works from WSL.
 for _code_bin in \
   /mnt/c/Users/*/AppData/Local/Programs/Microsoft\ VS\ Code/bin/code \
   "/mnt/c/Program Files/Microsoft VS Code/bin/code"; do
@@ -86,16 +133,6 @@ unset _code_bin
 # <<< vscode cli <<<
 EOF
 
-# Keep Oh My Posh as the very last line (no-op before Phase 6)
-if grep -q 'oh-my-posh init bash' ~/.bashrc; then
-  omp_init="$(grep 'oh-my-posh init bash' ~/.bashrc | tail -n 1)"
-  awk -v omp="$omp_init" \
-    'index($0, "oh-my-posh init bash") == 0 { print } END { print ""; print omp }' \
-    ~/.bashrc > ~/.bashrc.tmp &&
-    cat ~/.bashrc.tmp > ~/.bashrc &&
-    rm -f ~/.bashrc.tmp
-fi
-
 source ~/.bashrc
 ```
 
@@ -106,27 +143,62 @@ wsl --shutdown
 wsl -d Debian
 ```
 
+### Phase 1a: Apply the VS Code Mounts (After Restart)
+
+After the restart, create the mountpoints and apply the fstab entries:
+
+```bash
+WINUSER="$(sed -n 's#^c:/Users/\([^/]*\)/vscode-remote-wsl.*#\1#p' /etc/fstab | head -n 1)"
+
+# Create every /mnt/c mountpoint listed in fstab, unescaping \040.
+sudo -v
+sudo awk '$2 ~ /^\/mnt\/c\// { gsub(/\\040/, " ", $2); print $2 }' /etc/fstab |
+while IFS= read -r mp; do
+  sudo mkdir -p "$mp"
+done
+
+sudo mount -a
+
+findmnt "/mnt/c/Users/$WINUSER/.vscode/extensions"
+findmnt "/mnt/c/Users/$WINUSER/vscode-remote-wsl"
+
+VSCODE_MOUNT="$(awk '$1 ~ /VS.040Code/ { gsub(/\\040/, " ", $2); print $2; exit }' /etc/fstab)"
+if [ -n "$VSCODE_MOUNT" ]; then
+  findmnt "$VSCODE_MOUNT"
+fi
+```
+
+> [!NOTE]
+> * The first boot after disabling automount happens before these directories exist, so the fstab entries may fail once. Creating them and running `sudo mount -a` fixes it; they persist for later boots.
+> * Install VS Code and the WSL extension on Windows first; `.vscode\extensions` must exist for the mount to succeed.
+> * If Windows did not expose `%USERNAME%`, replace `YourWindowsUsername` in `/etc/fstab` first, then rerun the commands above.
+> * `%USERPROFILE%\vscode-remote-wsl` must exist on Windows. Starting one WSL connection from VS Code normally creates it; if it is missing, connect once, then run `sudo mount -a` again.
+> * If the VS Code WSL log reports a different server path, such as `AppData\Local\Temp\vscode-remote-wsl`, mount that folder instead of `%USERPROFILE%\vscode-remote-wsl`.
+> * `code .` is wired up automatically when the VS Code install folder is found. If VS Code is in a non-standard path, add its folder to `/etc/fstab` and create the mountpoint manually.
+
 ---
 
 ## Phase 2: Backup & Restore Cheat Sheet (PowerShell)
 
 Run these PowerShell commands on the Windows host to snapshot or restore your Debian environment.
 
+Back up the instance:
+
 ```powershell
-# Stop instance before export
 wsl --terminate Debian
+New-Item -ItemType Directory -Force -Path "D:\WSL\_backup" | Out-Null
 
-# Create backup directory if it does not exist
-New-Item -ItemType Directory -Force -Path "D:\WSL\_backup"
+$backup = "D:\WSL\_backup\DebianInitialStart.tar"
+Remove-Item -Force $backup -ErrorAction SilentlyContinue
+wsl --export Debian $backup
+```
 
-# Export clean instance snapshot
-wsl --export Debian D:\WSL\_backup\DebianInitialStart.tar
+> [!WARNING]
+> The restore below is destructive. `wsl --unregister` deletes the current Debian instance and every change made after the snapshot. Only run it when you intend to roll back.
 
-# Restore procedure (Unregister & Import)
+```powershell
 wsl --unregister Debian
-wsl --import Debian D:\WSL\Debian\ D:\WSL\_backup\DebianInitialStart.tar
-
-# Launch restored instance
+wsl --import Debian D:\WSL\Debian\ D:\WSL\_backup\DebianInitialStart.tar --version 2
 wsl -d Debian
 ```
 
@@ -143,21 +215,26 @@ cat << 'EOF' > setup_docker_rootless.sh
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [ ! -d /run/systemd/system ]; then
+  echo "systemd is not running. Enable it in /etc/wsl.conf and restart WSL first." >&2
+  exit 1
+fi
+
 echo "=== STEP 1: Updating System Packages & Prerequisites ==="
 sudo apt-get update && sudo apt-get upgrade -y
 sudo apt-get install -y \
   ca-certificates \
   curl \
   gnupg \
-  gnupg2 \
   uidmap \
   unzip \
-  slirp4netns
+  slirp4netns \
+  dbus-user-session
 
 echo "=== STEP 2: Setting up Docker Official Repository ==="
 sudo install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/debian/gpg | \
-  sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+  sudo gpg --yes --dearmor -o /etc/apt/keyrings/docker.gpg
 sudo chmod a+r /etc/apt/keyrings/docker.gpg
 
 echo \
@@ -172,26 +249,29 @@ sudo apt-get install -y \
   docker-ce-cli \
   containerd.io \
   docker-buildx-plugin \
-  docker-compose-plugin
+  docker-compose-plugin \
+  docker-ce-rootless-extras
 
 echo "=== STEP 3: Disabling System Docker Daemon (Rootless Prep) ==="
 sudo systemctl disable --now docker.service docker.socket || true
 sudo systemctl stop docker.socket || true
+sudo rm -f /var/run/docker.sock
 
 echo "=== STEP 4: Configuring Docker Rootless Mode ==="
-# Setup rootless socket tool
 dockerd-rootless-setuptool.sh install --force
 
 # Export DOCKER_HOST into bashrc if not already present
 if ! grep -q "DOCKER_HOST" ~/.bashrc; then
-  echo 'export DOCKER_HOST=unix:///run/user/$(id -u)/docker.sock' >> ~/.bashrc
+  {
+    echo '# Rootless Docker socket (added by the WSL setup guide)'
+    echo 'export DOCKER_HOST=unix:///run/user/$(id -u)/docker.sock'
+  } >> ~/.bashrc
 fi
 export DOCKER_HOST=unix:///run/user/$(id -u)/docker.sock
 
 # Enable lingering so user-space services persist
 sudo loginctl enable-linger "$USER"
 
-# Enable and start user-level docker service
 systemctl --user enable --now docker
 systemctl --user restart docker
 
@@ -200,6 +280,7 @@ EOF
 
 chmod +x setup_docker_rootless.sh
 ./setup_docker_rootless.sh
+source ~/.bashrc
 ```
 
 ---
@@ -227,18 +308,14 @@ set -euo pipefail
 
 echo "=== STEP 1: Installing NVIDIA Container Toolkit Repository & Packages ==="
 curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
-  sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+  sudo gpg --yes --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
 
-curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
+curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
   sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
-  sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+  sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list >/dev/null
 
 sudo apt-get update
-sudo apt-get install -y \
-  nvidia-container-toolkit \
-  nvidia-container-toolkit-base \
-  libnvidia-container-tools \
-  libnvidia-container1
+sudo apt-get install -y nvidia-container-toolkit
 
 echo "=== STEP 2: Configuring NVIDIA Runtime for Rootless Docker ==="
 # Ensure rootless docker config directory exists
@@ -247,7 +324,6 @@ mkdir -p ~/.config/docker
 # Configure NVIDIA toolkit to update rootless daemon.json (NOT /etc/docker/daemon.json)
 nvidia-ctk runtime configure --runtime=docker --config="$HOME/.config/docker/daemon.json"
 
-# Restart rootless Docker daemon
 systemctl --user restart docker
 
 echo "=== STEP 3: Configure NVIDIA for Rootless Docker ==="
@@ -260,6 +336,7 @@ EOF
 
 chmod +x setup_nvidia_toolkit.sh
 ./setup_nvidia_toolkit.sh
+source ~/.bashrc
 ```
 
 > [!NOTE]
@@ -269,12 +346,6 @@ chmod +x setup_nvidia_toolkit.sh
 
 ## Phase 5: Verification & Testing
 
-Apply environment variables first:
-
-```bash
-source ~/.bashrc
-```
-
 ### 1. Verify Docker Rootless Mode (All Systems)
 
 Run the following to confirm Docker is running in rootless mode:
@@ -283,7 +354,7 @@ Run the following to confirm Docker is running in rootless mode:
 docker info | grep -i "rootless"
 ```
 
-*Expected output: `rootless: true` or `Security Options: name=rootless`*
+*Expected output includes `rootless` (under `Security Options`).*
 
 ### 2. Test Hello-World Container (All Systems)
 
@@ -298,6 +369,9 @@ If you completed Phase 4, test GPU pass-through inside a container:
 ```bash
 docker run --rm --gpus all nvidia/cuda:13.0.2-base-ubuntu22.04 nvidia-smi
 ```
+
+> [!NOTE]
+> The CUDA 13 image needs a recent Windows NVIDIA driver. If it fails with a driver mismatch, use an older CUDA tag that matches your installed driver.
 
 > [!TIP]
 > **Troubleshooting the GPU test:**
@@ -322,10 +396,10 @@ docker run --rm --gpus all nvidia/cuda:13.0.2-base-ubuntu22.04 nvidia-smi
 Install common developer CLIs, prompt styling, package managers, and language runtimes (`uv`, `bun`, `fnm`, `Antigravity CLI`, `OpenCode`, and `oh-my-posh`).
 
 > [!IMPORTANT]
-> Oh My Posh is initialized at the **very bottom** of `~/.bashrc` so that all runtime paths (`PATH`) and shell hooks from `fnm`, `uv`, and `bun` are fully loaded first. Never append anything below that `eval "$(oh-my-posh init bash ...)"` line, or the prompt will break. If you need more shell config later, insert it **above** the Oh My Posh line (Phases 7 and 10 do this automatically).
+> Oh My Posh is initialized at the **bottom** of `~/.bashrc` so another prompt framework cannot override it. Put other shell configuration above that line; Phases 7 and 10 reorder automatically.
 
 ```bash
-# Clipboard utility (required for pasting clipboard images into agy and opencode)
+# Clipboard utility for pasting images from Windows into agy/opencode
 sudo apt update && sudo apt install -y wl-clipboard
 
 # 1. Astral uv (Python manager) & Python runtimes
@@ -349,26 +423,53 @@ npm --version
 
 # 4. pnpm
 bun add -g pnpm
-  
+
 # 5. Antigravity CLI
 curl -fsSL https://antigravity.google/cli/install.sh | bash
 agy --version
 
 # 6. OpenCode
 curl -fsSL https://opencode.ai/v2/install | bash
+source ~/.bashrc
 opencode --version
 
-# 7. Oh My Posh & Nerd Font (Installed and evaluated at the end of .bashrc)
-curl -s https://ohmyposh.dev/install.sh | bash -s
-mkdir -p ~/.config/oh-my-posh/ && cp -r ~/.cache/oh-my-posh/themes/ ~/.config/oh-my-posh/themes/
-oh-my-posh font install RobotoMono
+# 7. Oh My Posh & theme (the Nerd Font is installed on Windows; see the note below)
+curl -fsSL https://ohmyposh.dev/install.sh | bash -s
+mkdir -p ~/.config/oh-my-posh/
+cp -r ~/.cache/oh-my-posh/themes/. ~/.config/oh-my-posh/themes/
 
 if ! grep -q "oh-my-posh init bash" ~/.bashrc; then
-  printf '\neval "$(oh-my-posh init bash --config ~/.config/oh-my-posh/themes/emodipt-extend.omp.json)"\n' >> ~/.bashrc
+  printf '\n# Oh My Posh prompt (kept last so nothing overrides it)\neval "$(oh-my-posh init bash --config ~/.config/oh-my-posh/themes/emodipt-extend.omp.json)"\n' >> ~/.bashrc
 fi
 
 source ~/.bashrc
 ```
+
+> [!IMPORTANT]
+> **Install the Nerd Font on Windows, not in WSL.** Windows Terminal renders the prompt, so a font installed only inside Debian is invisible to it.
+>
+> In a PowerShell prompt on Windows:
+>
+> ```powershell
+> winget install JanDeDobbeleer.OhMyPosh --source winget
+> oh-my-posh font install RobotoMono
+> ```
+>
+> Then set Windows Terminal to use it. Open Settings (`Ctrl+Shift+,`), add this under `profiles.defaults` in `settings.json`, and restart Windows Terminal:
+>
+> ```json
+> {
+>   "profiles": {
+>     "defaults": {
+>       "font": {
+>         "face": "RobotoMono Nerd Font"
+>       }
+>     }
+>   }
+> }
+> ```
+>
+> If `oh-my-posh font install` is unavailable, install the font manually from [Nerd Fonts](https://www.nerdfonts.com/font-downloads) and use the exact family name shown in Windows Settings.
 
 ---
 
@@ -381,7 +482,8 @@ OpenCode v2 serves the web UI from its shared background service. This phase set
 Run this once:
 
 ```bash
-opencode service set password 'YourSecurePasswordHere'
+# Replace with your own password. Quote it if it contains spaces or special characters.
+opencode service set password YourSecurePasswordHere
 ```
 
 The password is stored in `~/.config/opencode/service.json`, which is already private:
@@ -420,15 +522,27 @@ fi
 
 cat << 'EOF' >> ~/.bashrc
 # >>> opencode helpers >>>
+# Start the shared OpenCode service and print the local web UI URL.
 opencode-server() {
-  opencode service start
-  printf 'Open http://localhost:49374\n'
+  opencode service start || return
+
+  local url
+  url="$(opencode service status)" || return
+  url="${url/127.0.0.1/localhost}"
+  url="${url/0.0.0.0/localhost}"
+  printf 'Open %s\n' "$url"
 }
 
+# Print a one-time browser pairing link for the current service URL.
 opencode-pair() {
-  opencode pair --url "http://localhost:49374"
+  local url
+  url="$(opencode service status)" || return
+  url="${url/127.0.0.1/localhost}"
+  url="${url/0.0.0.0/localhost}"
+  opencode pair --url "$url"
 }
 
+# Stop the shared OpenCode service.
 opencode-server-stop() {
   opencode service stop
 }
@@ -448,7 +562,7 @@ fi
 source ~/.bashrc
 ```
 
-The block ends with `source ~/.bashrc`, so the functions are available immediately. `opencode-server` starts the shared service and prints the URL. `opencode-pair` prints a fresh one-time login link only when you need one. `opencode-server-stop` stops it when you want to free the RAM.
+The block ends with `source ~/.bashrc`, so the functions are available immediately. `opencode-server` starts the shared service and prints its current URL. `opencode-pair` prints a one-time login link for that URL. `opencode-server-stop` stops it when you want to free the RAM.
 
 > [!IMPORTANT]
 > Keep the functions above `eval "$(oh-my-posh init bash ...)"` so the prompt still initializes last. The block above enforces this automatically, so you do not need to edit `~/.bashrc` by hand.
@@ -459,7 +573,7 @@ The block ends with `source ~/.bashrc`, so the functions are available immediate
 opencode-server
 ```
 
-OpenCode starts the shared service on its default port, `49374`, and prints:
+OpenCode starts the shared service and prints its current URL, for example:
 
 ```text
 Open http://localhost:49374
@@ -476,7 +590,7 @@ opencode-pair
 Open the printed link in the browser. It is one-time and expires in 5 minutes. After that, the browser session lasts 30 days, so normal use is just `opencode-server` and opening the URL.
 
 > [!NOTE]
-> `--url http://localhost:49374` is used because `opencode pair` otherwise prints `127.0.0.1`, which can point at Windows instead of WSL2. If you change the service port, update this URL.
+> The helpers read the address from `opencode service status` and replace `127.0.0.1` or `0.0.0.0` with `localhost`, because a Windows browser cannot reach the WSL loopback address directly. If you change the service port, the helpers follow it automatically.
 
 ### 4. Stop the server
 
@@ -505,14 +619,24 @@ opencode service status
 Install the GitHub CLI, authenticate your account, and set global Git identity:
 
 ```bash
-sudo apt install -y gh
+# Debian's gh package is old; use GitHub's official apt repository.
+(type -p wget >/dev/null || (sudo apt update && sudo apt install -y wget)) \
+  && sudo mkdir -p -m 755 /etc/apt/keyrings \
+  && out=$(mktemp) && wget -nv -O$out https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+  && cat $out | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg >/dev/null \
+  && rm -f $out \
+  && sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | \
+       sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null \
+  && sudo apt update \
+  && sudo apt install -y gh
 
 # Authenticate with GitHub (follow terminal prompts)
 gh auth login
 
-# Set global Git identity
+# Set global Git identity. The noreply address must use your numeric GitHub ID.
 git config --global user.name "Full Name"
-git config --global user.email "code+username@users.noreply.github.com"
+git config --global user.email "$(gh api user --jq '.id')+$(gh api user --jq '.login')@users.noreply.github.com"
 ```
 
 ---
@@ -557,9 +681,12 @@ sudo apt update && sudo apt install -y \
 sudo ln -sf /usr/bin/fusermount3 /usr/bin/fusermount
 ```
 
+> [!NOTE]
+> The `fusermount` symlink is a compatibility shim for AppImages that still call FUSE2's `fusermount`; Debian ships `fusermount3`.
+
 ## Phase 10: Upgrade script
 
-Paste the block below **once** into your Debian terminal It writes the helper into `~/.bashrc`, then moves the Oh My Posh `eval` line back to the very bottom so the prompt keeps working. Re-pasting is safe: the old copy of the helper is removed first, and a single `upgrade` command is left behind.
+Paste the block below **once** into your Debian terminal. It writes the helper into `~/.bashrc`, then moves the Oh My Posh `eval` line back to the very bottom so the prompt keeps working. Re-pasting is safe: the old copy of the helper is removed first, and a single `upgrade` command is left behind.
 
 ```bash
 # Remove a previously added copy of the helper (makes re-pasting safe)
@@ -578,13 +705,13 @@ fi
 
 cat << 'EOF' >> ~/.bashrc
 # >>> system upgrade helper >>>
-# Helper function to log and run each upgrade command
+# Print each upgrade command before running it.
 _upgrade_step() {
   printf '\n\033[1;34m==> Running: %s\033[0m\n' "$*"
   "$@"
 }
 
-# System Upgrade
+# Upgrade apt packages and the user-level toolchains installed in this guide.
 upgrade() {
   local failed=0
 
