@@ -147,9 +147,10 @@ EOF
 source ~/.bashrc
 ```
 
-Restart Debian from PowerShell to apply `wsl.conf`:
+Leave the Debian shell first: press `Ctrl+D` or run `exit`. Then restart Debian from **PowerShell** on Windows to apply `wsl.conf`:
 
 ```powershell
+# Run these in PowerShell, not inside the Debian shell.
 # Restarts only this distro. Use `wsl --shutdown` if you changed .wslconfig.
 wsl --terminate Debian
 wsl -d Debian
