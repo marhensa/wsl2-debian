@@ -40,7 +40,7 @@ wsl -d Debian
 > [!NOTE]
 > `--name` and `--location` require WSL 2.4.4 or newer. If WSL is already installed, run `wsl --update` before the install command. If WSL is not installed yet, the first run enables it and may request elevation once; after the restart, rerun the block from a normal PowerShell prompt.
 
-Inside the Debian shell, configure `/etc/wsl.conf` and the VS Code mounts. `$USER` is expanded automatically, and `WINUSER` is auto-detected while `/mnt/c` is still mounted:
+Inside the Debian shell, configure `/etc/wsl.conf` and the VS Code mounts. `$USER` is expanded automatically, and the Windows profile folder is auto-detected while `/mnt/c` is still mounted:
 
 ```bash
 # Write /etc/wsl.conf (unquoted EOF lets $USER expand)
@@ -64,9 +64,12 @@ EOF
 
 # VS Code Remote-WSL reads these two Windows folders. Mount only them, read-only.
 # The mountpoint directories are created after the WSL restart, before `mount -a`.
-WINUSER="$(/mnt/c/Windows/System32/cmd.exe /c 'echo %USERNAME%' 2>/dev/null | tr -d '\r')"
+# %USERPROFILE% is authoritative; %USERNAME% can differ for renamed/domain accounts.
+WINPROFILE="$(/mnt/c/Windows/System32/cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r')"
+WINPROFILE="${WINPROFILE%\\}"
+WINUSER="${WINPROFILE##*\\}"
 if [ -z "$WINUSER" ]; then
-  WINUSER="$(sed -n 's#^c:/Users/\([^/]*\)/vscode-remote-wsl.*#\1#p' /etc/fstab | head -n 1)"
+  WINUSER="$(sed -n 's#^[A-Za-z]:/Users/\([^/]*\)/vscode-remote-wsl.*#\1#p' /etc/fstab | head -n 1)"
 fi
 WINUSER="${WINUSER:-YourWindowsUsername}"
 
@@ -75,6 +78,13 @@ if ! grep -q 'vscode-remote-wsl' /etc/fstab; then
 c:/Users/$WINUSER/.vscode/extensions  /mnt/c/Users/$WINUSER/.vscode/extensions  drvfs defaults,ro 0 0
 c:/Users/$WINUSER/vscode-remote-wsl   /mnt/c/Users/$WINUSER/vscode-remote-wsl   drvfs defaults,ro 0 0
 EOF
+fi
+
+# Create the Windows source folders now (while /mnt/c is mounted) so the
+# fstab entries above can mount them after the restart.
+if [ -d "/mnt/c/Users/$WINUSER" ]; then
+  mkdir -p "/mnt/c/Users/$WINUSER/.vscode/extensions" \
+           "/mnt/c/Users/$WINUSER/vscode-remote-wsl"
 fi
 
 # Detect the VS Code install folder so `code .` works without extra steps.
@@ -100,8 +110,9 @@ fi
 
 > [!TIP]
 > * **Username:** `$USER` is expanded by your current shell before `sudo` runs, so the file gets the UNIX username you created in Step 2. Run the block as your normal user, not through `sudo -i` or as root, or `$USER` will be `root`.
-> * **VS Code Integration:** The VS Code Remote-WSL extension needs `%USERPROFILE%\.vscode\extensions` and `%USERPROFILE%\vscode-remote-wsl`. With automount disabled, the two `/etc/fstab` entries above provide exactly those folders, read-only; the rest of `C:` stays hidden. The mountpoints are created after the restart.
-> * **Terminal `code` Command:** Because `appendWindowsPath=false` isolates your Linux `$PATH` from Windows, `code .` is not available in your WSL terminal. The block below auto-detects the Windows VS Code CLI, adds an alias to `~/.bashrc`, and adds the VS Code install folder to `/etc/fstab` as a read-only mount. Install VS Code on Windows before running this block.
+> * **Windows profile:** The block reads `%USERPROFILE%` so renamed/domain profiles are handled. The rest of the guide assumes that profile is on `C:`; if it is on another drive, adjust the `/etc/fstab` sources/targets and the Phase 1a `findmnt` paths.
+> * **VS Code Integration:** The VS Code Remote-WSL extension needs `%USERPROFILE%\.vscode\extensions` and `%USERPROFILE%\vscode-remote-wsl`. With automount disabled, the two `/etc/fstab` entries above provide exactly those folders, read-only; the rest of `C:` stays hidden. Because drives are no longer auto-mounted, tools that expect `/mnt/c` (such as `cmd.exe`, `explorer.exe`, or Docker bind mounts of Windows paths) will not find it; add another `drvfs` entry to `/etc/fstab` for any other Windows folder you need. The mountpoints are created after the restart.
+> * **Terminal `code` Command:** Because `appendWindowsPath=false` isolates your Linux `$PATH` from Windows, `code .` is not available in your WSL terminal. The previous block also adds the VS Code install folder to `/etc/fstab` as a read-only mount; the block below auto-detects the Windows VS Code CLI and adds an alias to `~/.bashrc`. Install VS Code on Windows before running this block.
 
 ```bash
 # Remove a previous copy (makes re-pasting safe)
@@ -136,10 +147,11 @@ EOF
 source ~/.bashrc
 ```
 
-Restart WSL from PowerShell to apply `wsl.conf`:
+Restart Debian from PowerShell to apply `wsl.conf`:
 
 ```powershell
-wsl --shutdown
+# Restarts only this distro. Use `wsl --shutdown` if you changed .wslconfig.
+wsl --terminate Debian
 wsl -d Debian
 ```
 
@@ -148,7 +160,7 @@ wsl -d Debian
 After the restart, create the mountpoints and apply the fstab entries:
 
 ```bash
-WINUSER="$(sed -n 's#^c:/Users/\([^/]*\)/vscode-remote-wsl.*#\1#p' /etc/fstab | head -n 1)"
+WINUSER="$(sed -n 's#^[A-Za-z]:/Users/\([^/]*\)/vscode-remote-wsl.*#\1#p' /etc/fstab | head -n 1)"
 
 # Create every /mnt/c mountpoint listed in fstab, unescaping \040.
 sudo -v
@@ -169,10 +181,10 @@ fi
 ```
 
 > [!NOTE]
-> * The first boot after disabling automount happens before these directories exist, so the fstab entries may fail once. Creating them and running `sudo mount -a` fixes it; they persist for later boots.
-> * Install VS Code and the WSL extension on Windows first; `.vscode\extensions` must exist for the mount to succeed.
-> * If Windows did not expose `%USERNAME%`, replace `YourWindowsUsername` in `/etc/fstab` first, then rerun the commands above.
-> * `%USERPROFILE%\vscode-remote-wsl` must exist on Windows. Starting one WSL connection from VS Code normally creates it; if it is missing, connect once, then run `sudo mount -a` again.
+> * On the first boot after this change, WSL may print `wsl: Processing /etc/fstab with mount -a failed.` This is expected and non-fatal: WSL runs `/bin/mount -a` before any boot command or systemd service, and the target directories under `/mnt/c/...` do not exist in the distro filesystem yet. Phase 1a creates them and runs `sudo mount -a`; from the next boot the mounts are clean.
+> * Install VS Code and the WSL extension on Windows first; `.vscode\extensions` must exist for the mount to succeed. The block above creates both Windows folders when the profile exists, so the mounts should succeed after Phase 1a.
+> * If Windows did not expose `%USERPROFILE%`, replace `YourWindowsUsername` in `/etc/fstab` first, then rerun the commands above.
+> * `%USERPROFILE%\vscode-remote-wsl` must exist on Windows. The block above creates it if the profile folder exists; otherwise start one WSL connection from VS Code (it may fail), then run `sudo mount -a` and retry.
 > * If the VS Code WSL log reports a different server path, such as `AppData\Local\Temp\vscode-remote-wsl`, mount that folder instead of `%USERPROFILE%\vscode-remote-wsl`.
 > * `code .` is wired up automatically when the VS Code install folder is found. If VS Code is in a non-standard path, add its folder to `/etc/fstab` and create the mountpoint manually.
 
@@ -455,16 +467,12 @@ source ~/.bashrc
 > oh-my-posh font install RobotoMono
 > ```
 >
-> Then set Windows Terminal to use it. Open Settings (`Ctrl+Shift+,`), add this under `profiles.defaults` in `settings.json`, and restart Windows Terminal:
+> Then set Windows Terminal to use it. Open Settings (`Ctrl+Shift+,`), add this `defaults` object inside the existing `profiles` object in `settings.json`, and restart Windows Terminal:
 >
 > ```json
-> {
->   "profiles": {
->     "defaults": {
->       "font": {
->         "face": "RobotoMono Nerd Font"
->       }
->     }
+> "defaults": {
+>   "font": {
+>     "face": "RobotoMono Nerd Font"
 >   }
 > }
 > ```
@@ -485,6 +493,9 @@ Run this once:
 # Replace with your own password. Quote it if it contains spaces or special characters.
 opencode service set password YourSecurePasswordHere
 ```
+
+> [!TIP]
+> The password is passed on the command line, so it can end up in shell history. If that matters, remove that entry afterward (`history -d <number>`), or set `HISTCONTROL=ignorespace` and prefix the command with a space.
 
 The password is stored in `~/.config/opencode/service.json`, which is already private:
 
@@ -682,7 +693,7 @@ sudo ln -sf /usr/bin/fusermount3 /usr/bin/fusermount
 ```
 
 > [!NOTE]
-> The `fusermount` symlink is a compatibility shim for AppImages that still call FUSE2's `fusermount`; Debian ships `fusermount3`.
+> The `fusermount` symlink is a compatibility shim for AppImages that still call FUSE2's `fusermount`; Debian's `fuse3` package provides both `fusermount` and `fusermount3`. On Debian 13, `libfuse2` is a virtual package provided by `libfuse2t64`, so `apt` resolves it automatically.
 
 ## Phase 10: Upgrade script
 
