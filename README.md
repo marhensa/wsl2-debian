@@ -191,33 +191,7 @@ fi
 
 ---
 
-## Phase 2: Backup & Restore Cheat Sheet (PowerShell)
-
-Run these PowerShell commands on the Windows host to snapshot or restore your Debian environment.
-
-Back up the instance:
-
-```powershell
-wsl --terminate Debian
-New-Item -ItemType Directory -Force -Path "D:\WSL\_backup" | Out-Null
-
-$backup = "D:\WSL\_backup\DebianInitialStart.tar"
-Remove-Item -Force $backup -ErrorAction SilentlyContinue
-wsl --export Debian $backup
-```
-
-> [!WARNING]
-> The restore below is destructive. `wsl --unregister` deletes the current Debian instance and every change made after the snapshot. Only run it when you intend to roll back.
-
-```powershell
-wsl --unregister Debian
-wsl --import Debian D:\WSL\Debian\ D:\WSL\_backup\DebianInitialStart.tar --version 2
-wsl -d Debian
-```
-
----
-
-## Phase 3: Docker Rootless Installation
+## Phase 2: Docker Rootless Installation
 
 This script installs Docker Engine and configures it in **Rootless mode**. All users (with or without NVIDIA GPUs) should complete this step.
 
@@ -298,7 +272,7 @@ source ~/.bashrc
 
 ---
 
-## Phase 4: NVIDIA Container Toolkit (Optional)
+## Phase 3: NVIDIA Container Toolkit (Optional)
 
 > [!NOTE]
 > Only run this phase if your host system has an NVIDIA GPU and you require GPU acceleration inside Docker containers. If your machine uses integrated graphics, an AMD GPU, or you do not need GPU support, **skip this phase**.
@@ -353,11 +327,11 @@ source ~/.bashrc
 ```
 
 > [!NOTE]
-> This `no-cgroups` setting is required for rootless Docker. If GPU access still fails, see the WSL2 troubleshooting notes in Phase 5.
+> This `no-cgroups` setting is required for rootless Docker. If GPU access still fails, see the WSL2 troubleshooting notes in Phase 4.
 
 ---
 
-## Phase 5: Verification & Testing
+## Phase 4: Verification & Testing
 
 ### 1. Verify Docker Rootless Mode (All Systems)
 
@@ -377,7 +351,7 @@ docker run --rm hello-world
 
 ### 3. Test NVIDIA GPU Access (NVIDIA Machines Only)
 
-If you completed Phase 4, test GPU pass-through inside a container:
+If you completed Phase 3, test GPU pass-through inside a container:
 
 ```bash
 docker run --rm --gpus all nvidia/cuda:13.0.2-base-ubuntu22.04 nvidia-smi
@@ -404,12 +378,12 @@ docker run --rm --gpus all nvidia/cuda:13.0.2-base-ubuntu22.04 nvidia-smi
 
 ---
 
-## Phase 6: Developer CLI & Runtime Tooling
+## Phase 5: Developer CLI & Runtime Tooling
 
 Install common developer CLIs, prompt styling, package managers, and language runtimes (`uv`, `bun`, `fnm`, `Antigravity CLI`, `OpenCode`, and `oh-my-posh`).
 
 > [!IMPORTANT]
-> Oh My Posh is initialized at the **bottom** of `~/.bashrc` so another prompt framework cannot override it. Put other shell configuration above that line; Phases 7 and 10 reorder automatically.
+> Oh My Posh is initialized at the **bottom** of `~/.bashrc` so another prompt framework cannot override it. Put other shell configuration above that line; Phases 6 and 9 reorder automatically.
 
 ```bash
 # Clipboard utility for pasting images from Windows into agy/opencode
@@ -482,7 +456,7 @@ source ~/.bashrc
 
 ---
 
-## Phase 7: OpenCode v2 Web UI & Server
+## Phase 6: OpenCode v2 Web UI & Server
 
 OpenCode v2 serves the web UI from its shared background service. This phase sets the server password once and adds an `opencode-server` launcher that starts the service. After the first browser pairing, the browser uses a session cookie; you do not enter the password or pair again on every start.
 
@@ -626,7 +600,7 @@ opencode service status
 
 ---
 
-## Phase 8: GitHub CLI & Git Configuration
+## Phase 7: GitHub CLI & Git Configuration
 
 Install the GitHub CLI, authenticate your account, and set global Git identity:
 
@@ -653,7 +627,7 @@ git config --global user.email "$(gh api user --jq '.id')+$(gh api user --jq '.l
 
 ---
 
-## Phase 9: WSLg Desktop Libraries & Build Dependencies
+## Phase 8: WSLg Desktop Libraries & Build Dependencies
 
 Install essential build utilities, Wayland/X11 client libraries, OpenGL/EGL runtime packages for WSLg GUI apps, and configure FUSE for AppImage support:
 
@@ -696,7 +670,7 @@ sudo ln -sf /usr/bin/fusermount3 /usr/bin/fusermount
 > [!NOTE]
 > The `fusermount` symlink is a compatibility shim for AppImages that still call FUSE2's `fusermount`; Debian's `fuse3` package provides both `fusermount` and `fusermount3`. On Debian 13, `libfuse2` is a virtual package provided by `libfuse2t64`, so `apt` resolves it automatically.
 
-## Phase 10: Upgrade script
+## Phase 9: Upgrade script
 
 Paste the block below **once** into your Debian terminal. It writes the helper into `~/.bashrc`, then moves the Oh My Posh `eval` line back to the very bottom so the prompt keeps working. Re-pasting is safe: the old copy of the helper is removed first, and a single `upgrade` command is left behind.
 
@@ -770,3 +744,29 @@ upgrade
 
 > [!NOTE]
 > The block appends the helper and *then* re-adds the Oh My Posh line, so Oh My Posh still runs last. If you ever add shell config by hand, put it above the `eval "$(oh-my-posh init bash ...)"` line.
+
+---
+
+## Phase 10: Backup & Restore Cheat Sheet (PowerShell)
+
+Run these PowerShell commands on the Windows host after completing the phases you need. The snapshot then includes Docker, the NVIDIA toolkit, the developer tooling, and your shell configuration.
+
+Back up the configured instance:
+
+```powershell
+wsl --terminate Debian
+New-Item -ItemType Directory -Force -Path "D:\WSL\_backup" | Out-Null
+
+$backup = "D:\WSL\_backup\DebianSetupComplete.tar"
+Remove-Item -Force $backup -ErrorAction SilentlyContinue
+wsl --export Debian $backup
+```
+
+> [!WARNING]
+> The restore below is destructive. `wsl --unregister` deletes the current Debian instance and every change made after the snapshot. Only run it when you intend to roll back.
+
+```powershell
+wsl --unregister Debian
+wsl --import Debian D:\WSL\Debian\ D:\WSL\_backup\DebianSetupComplete.tar --version 2
+wsl -d Debian
+```
