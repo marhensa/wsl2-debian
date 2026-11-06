@@ -5,7 +5,13 @@
 > [!IMPORTANT]
 > **Before you start**
 > * Windows 11 with WSL 2.4.4 or newer (`wsl --version`).
-> * VS Code installed on Windows with the WSL extension if you want `code .` (see the [VS Code WSL guide](https://code.visualstudio.com/docs/remote/wsl)).
+> * VS Code installed on Windows if you want `code .`. Install the WSL extension from a Windows terminal:
+>
+>   ```powershell
+>   code --install-extension ms-vscode-remote.remote-wsl
+>   ```
+>
+>   If `code` is not on your `PATH`, install the **WSL** extension (`ms-vscode-remote.remote-wsl`) from the VS Code Extensions view instead.
 > * The guide uses `D:\WSL` as an example; replace it if you do not have a `D:` drive.
 > * The NVIDIA phase is optional and needs a current Windows NVIDIA driver.
 
